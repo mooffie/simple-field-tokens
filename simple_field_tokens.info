@@ -1,0 +1,4 @@
+name = Simple field tokens
+description = Expose as tokens fields attached to entities.
+core = 7.x
+files[] = simple_field_tokens.module

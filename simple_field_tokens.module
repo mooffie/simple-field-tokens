@@ -1,0 +1,131 @@
+<?php
+
+/**
+ * Returns the token type corresponding to an entity type.
+ */
+function simple_field_tokens_token_type($entity) {
+  static $map = array(
+    'taxonomy_term' => 'term',
+    'taxonomy_vocabulary' => 'vocabulary',
+  );
+  return isset($map[$entity]) ? $map[$entity] : $entity;
+}
+
+/**
+ * Implements hook_token_info_alter().
+ *
+ * We can't use hook_token_info() because we need to examine the available token
+ * types and see whether we need to declare new ones.
+ */
+function simple_field_tokens_token_info_alter(&$data = array()) {
+
+  $tokens_to_provide = array();
+  $tokens_to_ignore  = array(); // Because they're provided by somebody else.
+
+  // The comment module provides a comment:body token instead.
+  $tokens_to_ignore['comment:comment_body'] = TRUE;
+
+  foreach (field_info_instances() as $entity => $bundles) {
+    $token_type = simple_field_tokens_token_type($entity);
+    foreach ($bundles as $bundle => $instances) {
+      foreach ($instances as $instance) {
+
+        // Define the token type, if not already defined.
+        if (!isset($data['types'][$token_type])) {
+          $info = entity_get_info($entity);
+          $data['types'][$token_type] = array(
+            'name' => $info['label'],
+            'description' => $info['label'],
+            'needs-data' => $token_type,
+          );
+        }
+
+        $token = $token_type . ':' . $instance['field_name'];
+
+        // Define the token, if not already defined, and if we aren't to ignore it.
+        if (!isset($data['tokens'][$token_type][$instance['field_name']]) && !isset($tokens_to_ignore[$token])) {
+          $field_info = field_info_field($instance['field_name']);
+          $field_type_info = field_info_field_types($field_info['type']);
+          $data['tokens'][$token_type][$instance['field_name']] = array(
+            'name' => $instance['label'],
+            'description' => $field_type_info['label'], // E.g., "Text", "Integer", etc.
+          );
+          $tokens_to_provide[$token] = TRUE;
+        }
+        else {
+          if (!isset($tokens_to_provide[$token])) {
+            $tokens_to_ignore[$token] = TRUE;
+          }
+        }
+
+      }
+    }
+  }
+
+  // @todo: Delete variable in hook_uninstall().
+  variable_set('simple_field_tokens__tokens_to_ignore', $tokens_to_ignore);
+}
+
+/**
+ * Returns all the fields defined on this system groupd by the token type.
+ *
+ * [
+ *   'node' => [
+ *     'field_expiration' => [],
+ *     'field_price' => [],
+ *   ],
+ *   'comment => [
+ *     ...
+ *   ]
+ * ]
+ */
+function _simple_field_tokens__get_fields() {
+  $data = &drupal_static(__FUNCTION__);
+  if (!isset($data)) {
+    $data = array();
+    $tokens_to_ignore = variable_get('simple_field_tokens__tokens_to_ignore', array());
+    foreach (field_info_instances() as $entity => $bundles) {
+      $token_type = simple_field_tokens_token_type($entity);
+      foreach ($bundles as $bundle => $instances) {
+        foreach ($instances as $instance) {
+          if (!isset($tokens_to_ignore[$token_type . ':' . $instance['field_name']])) {
+            $data[$token_type][$instance['field_name']]['entity_type'] = $entity;
+          }
+        }
+      }
+    }
+  }
+  return $data;
+}
+
+/**
+ * Implements hook_tokens().
+ */
+function simple_field_tokens_tokens($type, $tokens, array $data = array(), array $options = array()) {
+  $replacements = array();
+  $fields = _simple_field_tokens__get_fields();
+  $langcode = isset($options['language']) ? $options['language']->language : NULL;
+
+  if (isset($data[$type])) {
+    $object = $data[$type];
+    foreach ($tokens as $name => $original) {
+      if (isset($fields[$type][$name])) {
+        $entity_type = $fields[$type][$name]['entity_type'];
+        list($id, $vid, $bundle) = entity_extract_ids($entity_type, $object);
+        $instance = field_info_instance($entity_type, $name, $bundle);
+        $output = array();
+        if (($items = field_get_items($instance['entity_type'], $object, $name, $langcode))) {
+          foreach ($items as $item) {
+            // @todo: Drupal bug: We want to use the 'default' display settings.
+            // field_view_field() seems to have a bug: we can only pass an array,
+            // not a 'default' string.
+            $output[] = drupal_render(field_view_value($instance['entity_type'], $object, $name, $item, array(), $langcode));
+          }
+        }
+        $replacements[$original] = strip_tags(implode(', ', $output));
+      }
+    }
+  }
+
+  return $replacements;
+}
